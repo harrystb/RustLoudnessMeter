@@ -1,4 +1,6 @@
 use std::collections::VecDeque;
+use std::sync::mpsc::{Receiver, Sender, channel};
+use std::thread;
 
 struct KFilterStage {
     a1: f32,
@@ -52,8 +54,8 @@ struct KFilter {
 impl KFilter {
     fn new() -> KFilter {
         KFilter {
-            stage1: KFilterStage.new_stage_1(),
-            stage2: KFilterStage.new_stage_2(),
+            stage1: KFilterStage::new_stage_1(),
+            stage2: KFilterStage::new_stage_2(),
         }
     }
 
@@ -64,14 +66,58 @@ impl KFilter {
 
 struct LUFSCalculator {
     filter: KFilter,
-    filtered_buf: VecDeque<f32>;
+    filtered_buf: VecDeque<f32>,
+    rx_chan: Receiver<f32>,
+    tx_chan: Sender<f32>,
 }
 
 impl LUFSCalculator {
-    fn new() -> LUFSCalculator {
-        LUFSCalculator {
-            filter: KFilter::new(),
-            filtered_buf: VecDeque::with_capacity(19200), //400ms with 48kHz -> 0.4 * 48000 =
+    fn start(rx_chan: Receiver<f32>, tx_chan: Sender<f32>) {
+        thread::spawn(move|| {
+            let mut calc = LUFSCalculator {
+                filter: KFilter::new(),
+                filtered_buf: VecDeque::with_capacity(19200), //400ms with 48kHz -> 0.4 * 48000 = 19200
+                rx_chan,
+                tx_chan,
+            };
+
+            while let Ok(val) = calc.rx_chan.recv() {
+                calc.filtered_buf.push_back(val);
+                if calc.filtered_buf.len() == 19200 {
+                    // calculate and clear 25% of the buffer
+                    match calc.tx_chan.send(-0.691 + 10.*(calc.filtered_buf.iter().map(|x| x*x).sum::<f32>()/19200.).log10()) {
+                        Ok(_) => (),
+                        Err(e) => break,
+                    }
+                    for _ in 0..4800 {
+                        calc.filtered_buf.pop_back();
+                    }
+                }
+            }
+        });
+    }
+}
+
+
+
+#[cfg(test)]
+mod tests {
+    use std::f32::consts::PI;
+    use super::*;
+
+    #[test]
+    fn test_1kHz() {
+        let (tx_chan, rx_chan) = channel();
+        let (tx2_chan, rx2_chan) = channel();
+
+        LUFSCalculator::start(rx_chan, tx2_chan);
+        for i in 0..19200 {
+            tx_chan.send(((i as f32) * 2.0 * PI * 997.0 / 48000.).sin()).expect("should not happen");
+        }
+        match rx2_chan.recv() {
+            Ok(v) => assert_eq!(v, 3.), // should be -3.01 TODO: this is current -3.7
+            Err(e) => panic!("Should not happen"),
         }
     }
+
 }
