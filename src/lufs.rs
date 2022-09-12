@@ -64,7 +64,7 @@ impl KFilter {
     }
 }
 
-struct LUFSCalculator {
+pub struct LUFSCalculator {
     filter: KFilter,
     filtered_buf: VecDeque<f32>,
     rx_chan: Receiver<f32>,
@@ -72,7 +72,7 @@ struct LUFSCalculator {
 }
 
 impl LUFSCalculator {
-    fn start(rx_chan: Receiver<f32>, tx_chan: Sender<f32>) {
+    pub fn start(rx_chan: Receiver<f32>, tx_chan: Sender<f32>) {
         thread::spawn(move|| {
             let mut calc = LUFSCalculator {
                 filter: KFilter::new(),
@@ -82,15 +82,15 @@ impl LUFSCalculator {
             };
 
             while let Ok(val) = calc.rx_chan.recv() {
-                calc.filtered_buf.push_back(val);
+                calc.filtered_buf.push_back(calc.filter.next(val));
                 if calc.filtered_buf.len() == 19200 {
                     // calculate and clear 25% of the buffer
                     match calc.tx_chan.send(-0.691 + 10.*(calc.filtered_buf.iter().map(|x| x*x).sum::<f32>()/19200.).log10()) {
                         Ok(_) => (),
                         Err(e) => break,
                     }
-                    for _ in 0..4800 {
-                        calc.filtered_buf.pop_back();
+                    for _ in 0..1200 { // was 0..4800
+                        calc.filtered_buf.pop_front();
                     }
                 }
             }
@@ -115,7 +115,7 @@ mod tests {
             tx_chan.send(((i as f32) * 2.0 * PI * 997.0 / 48000.).sin()).expect("should not happen");
         }
         match rx2_chan.recv() {
-            Ok(v) => assert_eq!(v, 3.), // should be -3.01 TODO: this is current -3.7
+            Ok(v) => assert!(v > -3.02 && v < -3.0), // should be -3.01
             Err(e) => panic!("Should not happen"),
         }
     }
