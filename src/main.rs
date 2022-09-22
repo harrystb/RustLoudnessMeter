@@ -7,6 +7,10 @@ use crate::egui::TextStyle;
 use std::collections::VecDeque;
 use cpal::{Stream, traits::StreamTrait};
 use cpal::traits::{HostTrait, DeviceTrait};
+use eframe::egui::plot::{Line, Plot, PlotPoints};
+use rustfft::{FftPlanner, num_complex::Complex};
+use rustfft::num_complex::ComplexFloat;
+
 mod lufs;
 use lufs::LUFSCalculator;
 
@@ -25,7 +29,7 @@ fn main() {
     let (tx_chan, rx_chan) = channel();
     let (tx_chan2, rx_chan2) = channel();
 
-    LUFSCalculator::start(rx_chan, tx_chan2);
+    LUFSCalculator::start(rx_chan, tx_chan2, supported_config.sample_rate().0);
 
     app.rx_channel = Some(rx_chan2);
     app.sample_rate = supported_config.sample_rate().0;
@@ -98,80 +102,120 @@ impl eframe::App for LoudnessApp {
             let vert_h = ui.available_height() - 10. - ui.spacing().item_spacing.y * 2.;
             ui.add_space(5.0);
             ui.horizontal(|ui| {
-                ui.style_mut().spacing.item_spacing.x = 0.0;
-                ui.allocate_ui_with_layout((30.0, vert_h).into(), egui::Layout::top_down(egui::Align::RIGHT), |ui| {
-                    ui.set_width(40.0);
-                    ui.style_mut().spacing.item_spacing = (0., 0.).into();
-                    ui.label("0dB");
-                    for i in 1..21 {
-                        ui.add_space((vert_h - 21.0 * text_height) / 20.0);
-                        ui.label(format!("{}dB", { i as f32 } * -3.0));
-                    }
-                });
-                ui.add_space(4.0);
-                ui.vertical(|ui| {
-                    ui.set_width(4.0);
-                    ui.set_height(vert_h);
-                    for i in 0..21 {
+                ui.horizontal(|ui| {
+                    ui.style_mut().spacing.item_spacing.x = 0.0;
+                    ui.allocate_ui_with_layout((30.0, vert_h).into(), egui::Layout::top_down(egui::Align::RIGHT), |ui| {
+                        ui.set_width(40.0);
+                        ui.style_mut().spacing.item_spacing = (0., 0.).into();
+                        ui.label("0dB");
+                        for i in 1..21 {
+                            ui.add_space((vert_h - 21.0 * text_height) / 20.0);
+                            ui.label(format!("{}dB", { i as f32 } * -3.0));
+                        }
+                    });
+                    ui.add_space(4.0);
+                    ui.vertical(|ui| {
+                        ui.set_width(4.0);
+                        ui.set_height(vert_h);
+                        for i in 0..21 {
+                            let mut rect = ui.max_rect();
+                            rect.set_top(rect.top() + 0.5 * text_height + { i as f32 } * (vert_h - text_height - 2.) / 20.);
+                            rect.set_bottom(rect.top() + 2.0);
+                            ui.painter().rect_filled(rect, 0.0, WHITE_COLOUR);
+                        }
+                    });
+                    ui.vertical(|ui| {
+                        ui.set_width(2.0);
+                        ui.set_height(vert_h);
                         let mut rect = ui.max_rect();
-                        rect.set_top(rect.top() + 0.5 * text_height + { i as f32 } * (vert_h - text_height - 2.) / 20.);
-                        rect.set_bottom(rect.top() + 2.0);
+                        rect.set_bottom(rect.bottom() - 0.5 * text_height);
+                        rect.set_top(rect.top() + 0.5 * text_height);
                         ui.painter().rect_filled(rect, 0.0, WHITE_COLOUR);
-                    }
-                });
-                ui.vertical(|ui| {
-                    ui.set_width(2.0);
-                    ui.set_height(vert_h);
-                    let mut rect = ui.max_rect();
-                    rect.set_bottom(rect.bottom() - 0.5 * text_height);
-                    rect.set_top(rect.top() + 0.5 * text_height);
-                    ui.painter().rect_filled(rect, 0.0, WHITE_COLOUR);
-                });
-                ui.add_space(2.0);
-                ui.vertical(|ui| {
-                    ui.set_width(10.0);
-                    ui.set_height(vert_h);
-                    let mut white_box_rect = ui.max_rect().clone();
-                    white_box_rect.set_bottom(white_box_rect.bottom() - 0.5 * text_height);
-                    if self.level > -20. {
-                        white_box_rect.set_top(white_box_rect.top() + 20. / 60. * vert_h + 0.5 * text_height);
-                        let mut red_box_rect = ui.max_rect().clone();
-                        red_box_rect.set_bottom(red_box_rect.top() + 20. / 60. * vert_h + 0.5 * text_height);
-                        red_box_rect.set_top(red_box_rect.top() + text_height + (-20. - self.level) / -60. * vert_h);
-                        ui.painter().rect_filled(red_box_rect, 0.0, RED_COLOUR);
-                    } else {
-                        white_box_rect.set_top(white_box_rect.top() + meter_portion * vert_h + 0.5 * text_height);
-                    }
-                    ui.painter().rect_filled(white_box_rect, 0.0, WHITE_COLOUR);
-                });
-                ui.add_space(2.0);
-                ui.vertical(|ui| {
-                    ui.set_width(2.0);
-                    ui.set_height(vert_h);
-                    let mut rect = ui.max_rect();
-                    rect.set_bottom(rect.bottom() - 0.5 * text_height);
-                    rect.set_top(rect.top() + 0.5 * text_height);
-                    ui.painter().rect_filled(rect, 0.0, WHITE_COLOUR);
-                });
-                ui.vertical(|ui| {
-                    ui.set_width(4.0);
-                    ui.set_height(vert_h);
-                    for i in 0..21 {
+                    });
+                    ui.add_space(2.0);
+                    ui.vertical(|ui| {
+                        ui.set_width(10.0);
+                        ui.set_height(vert_h);
+                        let mut white_box_rect = ui.max_rect().clone();
+                        white_box_rect.set_bottom(white_box_rect.bottom() - 0.5 * text_height);
+                        if self.level > -20. {
+                            white_box_rect.set_top(white_box_rect.top() + 20. / 60. * vert_h + 0.5 * text_height);
+                            let mut red_box_rect = ui.max_rect().clone();
+                            red_box_rect.set_bottom(red_box_rect.top() + 20. / 60. * vert_h + 0.5 * text_height);
+                            red_box_rect.set_top(red_box_rect.top() + text_height + (-20. - self.level) / -60. * vert_h);
+                            ui.painter().rect_filled(red_box_rect, 0.0, RED_COLOUR);
+                        } else {
+                            white_box_rect.set_top(white_box_rect.top() + meter_portion * vert_h + 0.5 * text_height);
+                        }
+                        ui.painter().rect_filled(white_box_rect, 0.0, WHITE_COLOUR);
+                    });
+                    ui.add_space(2.0);
+                    ui.vertical(|ui| {
+                        ui.set_width(2.0);
+                        ui.set_height(vert_h);
                         let mut rect = ui.max_rect();
-                        rect.set_top(rect.top() + 0.5 * text_height + { i as f32 } * (vert_h - text_height - 2.) / 20.);
-                        rect.set_bottom(rect.top() + 2.0);
+                        rect.set_bottom(rect.bottom() - 0.5 * text_height);
+                        rect.set_top(rect.top() + 0.5 * text_height);
                         ui.painter().rect_filled(rect, 0.0, WHITE_COLOUR);
-                    }
+                    });
+                    ui.vertical(|ui| {
+                        ui.set_width(4.0);
+                        ui.set_height(vert_h);
+                        for i in 0..21 {
+                            let mut rect = ui.max_rect();
+                            rect.set_top(rect.top() + 0.5 * text_height + { i as f32 } * (vert_h - text_height - 2.) / 20.);
+                            rect.set_bottom(rect.top() + 2.0);
+                            ui.painter().rect_filled(rect, 0.0, WHITE_COLOUR);
+                        }
+                    });
+                    ui.add_space(2.0);
+                    ui.allocate_ui_with_layout((40.0, vert_h).into(), egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                        ui.set_width(40.0);
+                        ui.style_mut().spacing.item_spacing = (0., 0.).into();
+                        ui.label("0dB");
+                        for i in 1..21 {
+                            ui.add_space((vert_h - 21.0 * text_height) / 20.0);
+                            ui.label(format!("{}dB", { i as f32 } * -3.0));
+                        }
+                    });
                 });
-                ui.add_space(2.0);
-                ui.allocate_ui_with_layout((40.0, vert_h).into(), egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                    ui.set_width(40.0);
-                    ui.style_mut().spacing.item_spacing = (0., 0.).into();
-                    ui.label("0dB");
-                    for i in 1..21 {
-                        ui.add_space((vert_h - 21.0 * text_height) / 20.0);
-                        ui.label(format!("{}dB", { i as f32 } * -3.0));
+                //TODO: Temp plotting of fft stuff - remove eventually
+                ui.vertical(|ui| {
+                    use std::f64::consts::PI;
+                    let mut planner = FftPlanner::new();
+                    let mut fft = planner.plan_fft_forward(4800);
+                    let mut planner = FftPlanner::new();
+                    let mut ifft = planner.plan_fft_inverse(4800);
+                    let mut d = vec![];
+                    for i in 0..1600 {
+                        d.push(Complex{re: (((i as f64) * 2.0 * PI * 997.0 / 16000.).sin()), im: 0.0});
+                        d.push(Complex{re: 0.0, im: 0.0});
+                        d.push(Complex{re: 0.0, im: 0.0});
                     }
+                    let mut f = d.clone();
+                    fft.process(&mut f);
+                    let mut f_filt = f.clone();
+                    f_filt.iter_mut().enumerate().for_each(|(i,v)|{
+                        if i < 800 {
+                            //v
+                        } else if i > 4000 {
+                            //v
+                        } else {
+                            *v = Complex { re: 0.0, im: 0.0}
+                        }
+                    });
+                    let mut i = f_filt.clone();
+                    ifft.process(&mut i);
+                    i.iter_mut().for_each(|v| v.re = v.re/4800.);
+                    let d_plot_points :PlotPoints = d.iter().enumerate().map(|(i,d)| [i as f64, d.re]).collect();
+                    let f_plot_points :PlotPoints = f.iter().enumerate().map(|(i,d)| [i as f64, d.abs()]).collect();
+                    let f_filt_plot_points :PlotPoints = f_filt.iter().enumerate().map(|(i,d)| [i as f64, d.abs()]).collect();
+                    let i_plot_points :PlotPoints = i.iter().enumerate().map(|(i,d)| [i as f64, d.re]).collect();
+
+                    Plot::new("raw_data").view_aspect(4.0).show(ui, |plot_ui| plot_ui.line(Line::new(d_plot_points)));
+                    Plot::new("fft_data").view_aspect(4.0).show(ui, |plot_ui| plot_ui.line(Line::new(f_plot_points)));
+                    Plot::new("fft_filtered_data").view_aspect(4.0).show(ui, |plot_ui| plot_ui.line(Line::new(f_filt_plot_points)));
+                    Plot::new("inverse_data").view_aspect(4.0).show(ui, |plot_ui| plot_ui.line(Line::new(i_plot_points)));
                 });
             });
             ui.add_space(5.0);
