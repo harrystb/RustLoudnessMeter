@@ -183,30 +183,25 @@ impl eframe::App for LoudnessApp {
                 ui.vertical(|ui| {
                     use std::f64::consts::PI;
                     let mut planner = FftPlanner::new();
-                    let mut fft = planner.plan_fft_forward(4800);
+                    let mut fft = planner.plan_fft_forward(1600);
                     let mut planner = FftPlanner::new();
                     let mut ifft = planner.plan_fft_inverse(4800);
                     let mut d = vec![];
                     for i in 0..1600 {
                         d.push(Complex{re: (((i as f64) * 2.0 * PI * 997.0 / 16000.).sin()), im: 0.0});
-                        d.push(Complex{re: 0.0, im: 0.0});
-                        d.push(Complex{re: 0.0, im: 0.0});
                     }
                     let mut f = d.clone();
                     fft.process(&mut f);
-                    let mut f_filt = f.clone();
-                    f_filt.iter_mut().enumerate().for_each(|(i,v)|{
-                        if i < 800 {
-                            //v
-                        } else if i > 4000 {
-                            //v
-                        } else {
-                            *v = Complex { re: 0.0, im: 0.0}
-                        }
+                    f.iter_mut().for_each(|v| {
+                        v.re /= 1600.;
+                        v.im /= 1600.;
                     });
+                    let mut f_filt = Vec::with_capacity(4800);
+                    f_filt.extend_from_slice(&f[..800]);
+                    f_filt.extend(std::iter::repeat(Complex{re: 0., im: 0.}).take(3200));
+                    f_filt.extend_from_slice(&f[800..]);
                     let mut i = f_filt.clone();
                     ifft.process(&mut i);
-                    i.iter_mut().for_each(|v| v.re = v.re/4800.);
                     let d_plot_points :PlotPoints = d.iter().enumerate().map(|(i,d)| [i as f64, d.re]).collect();
                     let f_plot_points :PlotPoints = f.iter().enumerate().map(|(i,d)| [i as f64, d.abs()]).collect();
                     let f_filt_plot_points :PlotPoints = f_filt.iter().enumerate().map(|(i,d)| [i as f64, d.abs()]).collect();

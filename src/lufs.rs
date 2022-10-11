@@ -85,16 +85,15 @@ impl LUFSCalculator {
             let mut needs_upsampling = false;
 
             // TODO: refactor so that these are not created when the sample rate is 48000
+            let raw_buf_len = (sample_rate/10) as usize; // 100ms of samples
             let mut planner = FftPlanner::new();
-            let mut fft = planner.plan_fft_forward(4800);
+            let mut fft = planner.plan_fft_forward(raw_buf_len);
             let mut ifft = planner.plan_fft_inverse(4800);
-            let spacing = 48000 / sample_rate; //how many zeros to insert between each sample while upsampling
-            let pass_band_loc = (4800 * sample_rate / 48000 / 2) as usize;
-            let mut raw_buffer: Vec<Complex<f32>> = Vec::with_capacity(4800);
+            let mut raw_buffer: Vec<Complex<f32>> = Vec::with_capacity(raw_buf_len);
             let mut upsampled_buffer: Vec<Complex<f32>> = Vec::with_capacity(4800);
             if sample_rate != 48000 {
                 needs_upsampling = true;
-                println!("Detected lower sample rate...calculating upsampling parameters...\nSample Rate: {}\nMultiplier: {}\nPass Band: {}", sample_rate, spacing, pass_band_loc);
+                println!("Detected lower sample rate...calculating upsampling parameters...\nSample Rate: {}", sample_rate);
             }
 
             let mut calc = LUFSCalculator {
@@ -107,25 +106,17 @@ impl LUFSCalculator {
             while let Ok(val) = calc.rx_chan.recv() {
                 if needs_upsampling {
                     raw_buffer.push(Complex{re: val, im: 0.0});
-                    for _ in 0..spacing-1 {
-                        raw_buffer.push(Complex{re: 0.0, im: 0.0});
-                    }
-                    if raw_buffer.len() == 4800 {
-                        // low pass filter to finish the upsampling
+                    if raw_buffer.len() == raw_buf_len {
                         fft.process(&mut raw_buffer);
-                        upsampled_buffer = raw_buffer.iter().enumerate().map(|(i, v)| {
-                            if i < pass_band_loc {
-                                *v
-                            } else if i > 4800 - pass_band_loc {
-                                *v
-                            } else {
-                                Complex{re: 0.0, im: 0.0}
-                            }
-                        } ).collect();
+                        upsampled_buffer.extend_from_slice(&raw_buffer[..raw_buf_len/2]);
+                        // pad the centre of the freq domain to up sample
+                        upsampled_buffer.extend( std::iter::repeat(Complex{re: 0.0, im:0.0}).take(4800 - raw_buf_len));
+                        upsampled_buffer.extend_from_slice(&raw_buffer[raw_buf_len/2..]);
                         ifft.process(&mut upsampled_buffer);
                         //Process
-                        upsampled_buffer.iter().for_each(|v| calc.filtered_buf.push_back(calc.filter.next(v.re/4800.*spacing as f32)));
+                        upsampled_buffer.iter().for_each(|v| calc.filtered_buf.push_back(calc.filter.next(v.re/(raw_buf_len as f32))));
                         raw_buffer.clear();
+                        upsampled_buffer.clear();
                     }
                 } else {
                     calc.filtered_buf.push_back(calc.filter.next(val));
