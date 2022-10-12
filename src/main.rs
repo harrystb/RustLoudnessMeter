@@ -1,10 +1,10 @@
 use std::sync::mpsc::{channel, Receiver};
 use std::time::Duration;
+use std::collections::VecDeque;
 use eframe::{egui, Frame, Storage};
 use egui::widgets::Label;
 use egui::{Color32, Context, Rgba, TopBottomPanel, Ui, Vec2, Visuals};
 use crate::egui::TextStyle;
-use std::collections::VecDeque;
 use cpal::{Stream, traits::StreamTrait};
 use cpal::traits::{HostTrait, DeviceTrait};
 use eframe::egui::plot::{Line, Plot, PlotPoints};
@@ -65,6 +65,7 @@ fn main() {
 }
 
 struct LoudnessApp {
+    level_history: VecDeque<f32>,
     level: f32,
     rx_channel: Option<Receiver<f32>>,
     stream: Option<Stream>,
@@ -73,7 +74,9 @@ struct LoudnessApp {
 
 impl Default for LoudnessApp {
     fn default() -> Self {
-        Self{level: -60., rx_channel: None, stream: None, sample_rate: 0}
+        // we want history to be last minute - with 100ms per sample - 600 samples total
+        let mut level_history = VecDeque::from([-60.; 600]);
+        Self{level_history , level: -60., rx_channel: None, stream: None, sample_rate: 0}
     }
 }
 
@@ -83,10 +86,12 @@ const HEADER_FOOTER_BG_COLOUR: Color32 = Color32::from_rgb(60,63,65,);
 
 impl eframe::App for LoudnessApp {
     fn update(&mut self, ctx: &Context, _frame: &mut Frame) {
-        ctx.request_repaint();
+        ctx.request_repaint_after(Duration::from_micros(100));
         match &self.rx_channel {
             Some(rx) => match rx.try_recv() {
                 Ok(v) => {
+                    self.level_history.pop_front();
+                    self.level_history.push_back(v);
                     self.level = v;
                 },
                 Err(e) => (),
@@ -179,38 +184,10 @@ impl eframe::App for LoudnessApp {
                         }
                     });
                 });
-                //TODO: Temp plotting of fft stuff - remove eventually
                 ui.vertical(|ui| {
-                    use std::f64::consts::PI;
-                    let mut planner = FftPlanner::new();
-                    let mut fft = planner.plan_fft_forward(1600);
-                    let mut planner = FftPlanner::new();
-                    let mut ifft = planner.plan_fft_inverse(4800);
-                    let mut d = vec![];
-                    for i in 0..1600 {
-                        d.push(Complex{re: (((i as f64) * 2.0 * PI * 997.0 / 16000.).sin()), im: 0.0});
-                    }
-                    let mut f = d.clone();
-                    fft.process(&mut f);
-                    f.iter_mut().for_each(|v| {
-                        v.re /= 1600.;
-                        v.im /= 1600.;
+                    Plot::new("level_history").show_background(false).show_axes([false, false]).show(ui, |plot_ui| {
+                        plot_ui.line(Line::new(self.level_history.iter().enumerate().map(|(i, v)| [(-599. + (i as f64)) / 10., *v as f64]).collect::<Vec<[f64;2]>>()));
                     });
-                    let mut f_filt = Vec::with_capacity(4800);
-                    f_filt.extend_from_slice(&f[..800]);
-                    f_filt.extend(std::iter::repeat(Complex{re: 0., im: 0.}).take(3200));
-                    f_filt.extend_from_slice(&f[800..]);
-                    let mut i = f_filt.clone();
-                    ifft.process(&mut i);
-                    let d_plot_points :PlotPoints = d.iter().enumerate().map(|(i,d)| [i as f64, d.re]).collect();
-                    let f_plot_points :PlotPoints = f.iter().enumerate().map(|(i,d)| [i as f64, d.abs()]).collect();
-                    let f_filt_plot_points :PlotPoints = f_filt.iter().enumerate().map(|(i,d)| [i as f64, d.abs()]).collect();
-                    let i_plot_points :PlotPoints = i.iter().enumerate().map(|(i,d)| [i as f64, d.re]).collect();
-
-                    Plot::new("raw_data").view_aspect(4.0).show(ui, |plot_ui| plot_ui.line(Line::new(d_plot_points)));
-                    Plot::new("fft_data").view_aspect(4.0).show(ui, |plot_ui| plot_ui.line(Line::new(f_plot_points)));
-                    Plot::new("fft_filtered_data").view_aspect(4.0).show(ui, |plot_ui| plot_ui.line(Line::new(f_filt_plot_points)));
-                    Plot::new("inverse_data").view_aspect(4.0).show(ui, |plot_ui| plot_ui.line(Line::new(i_plot_points)));
                 });
             });
             ui.add_space(5.0);
