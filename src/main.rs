@@ -7,7 +7,7 @@ use egui::{Color32, Context, Rgba, TopBottomPanel, Ui, Vec2, Visuals};
 use crate::egui::TextStyle;
 use cpal::{Stream, traits::StreamTrait};
 use cpal::traits::{HostTrait, DeviceTrait};
-use eframe::egui::plot::{Line, Plot, PlotPoints};
+use eframe::egui::plot::{Legend, Line, Plot, PlotPoints};
 use rustfft::{FftPlanner, num_complex::Complex};
 use rustfft::num_complex::ComplexFloat;
 
@@ -185,9 +185,91 @@ impl eframe::App for LoudnessApp {
                     });
                 });
                 ui.vertical(|ui| {
-                    Plot::new("level_history").show_background(false).show_axes([false, false]).show(ui, |plot_ui| {
-                        plot_ui.line(Line::new(self.level_history.iter().enumerate().map(|(i, v)| [(-599. + (i as f64)) / 10., *v as f64]).collect::<Vec<[f64;2]>>()));
+                    // Plot::new("level_history").show_background(false).show_axes([false, false]).show(ui, |plot_ui| {
+                    //     plot_ui.line(Line::new(self.level_history.iter().enumerate().map(|(i, v)| [(-599. + (i as f64)) / 10., *v as f64]).collect::<Vec<[f64;2]>>()));
+                    // });
+                    let mut initial_time_data = vec![];
+                    for i in 0..8400 { // sample rate 42kHz... 1kHz will be at the 1/42 * 8400 = 20th bin
+                        initial_time_data.push(Complex{ re: ((i as f64) * 2.0 * std::f64::consts::PI * 997.0 / 42000.).sin(), im: 0.});
+                    }
+
+                    let mut planner = FftPlanner::new();
+                    let mut fft = planner.plan_fft_forward(8400);
+                    let mut ifft = planner.plan_fft_inverse(8400);
+                    let mut window: Vec<f64> = vec![];
+                    let window_base_phase = 2.*std::f64::consts::PI/42000.;
+                    for i in 0..42000 {
+                        window.push(0.35875-0.48829*(window_base_phase*(i as f64)).cos() + 0.14128*(window_base_phase*2.*(i as f64)).cos() - 0.01168 * (window_base_phase*3.*(i as f64)).cos());
+                    }
+
+                    let mut fft_of_time = initial_time_data.clone();
+                    let mut fft_of_time_windowed = initial_time_data.clone();
+                    let mut window_iter = window.iter();
+                    fft_of_time_windowed.iter_mut().for_each(|v| {
+                        let window_val = window_iter.next().unwrap();
+                        v.re *= window_val;
+                        v.im *= window_val;
                     });
+                    fft.process(&mut fft_of_time);
+                    fft_of_time.iter_mut().for_each(|v| {
+                        v.re /= 91.65151; // approx sqrt(8400)
+                        v.im /= 91.65151;
+                    });
+                    fft.process(&mut fft_of_time_windowed);
+                    fft_of_time_windowed.iter_mut().for_each(|v| {
+                        v.re /= 91.65151;
+                        v.im /= 91.65151;
+                    });
+
+                    let mut fft_of_ifft = fft_of_time.clone();
+                    fft_of_ifft.iter_mut().enumerate().for_each(|(i,v)|{
+                        if i < 195  || i > 605 {
+                            v.re = 0.0001;
+                            v.im = 0.0001;
+                        }
+                    });
+                    let filtered_fft = fft_of_ifft.clone();
+                    ifft.process(&mut fft_of_ifft);
+                    let mut window_iter = window.iter();
+                    fft_of_ifft.iter_mut().for_each(|v| {
+                        let window_val = window_iter.next().unwrap();
+                        v.re = v.re / 91.65151 * window_val;
+                        v.im = v.im / 91.65151 * window_val;
+                    });
+                    let time_from_ifft = fft_of_ifft.clone();
+                    fft.process(&mut fft_of_ifft);
+                    fft_of_ifft.iter_mut().for_each(|v| {
+                        v.re /= 91.65151;
+                        v.im /= 91.65151;
+                    });
+
+                    Plot::new("fft stuff").legend(Legend::default()).show(ui, |plot_ui| {
+                        let time_line: Vec<[f64;2]> = initial_time_data.iter().enumerate().map(|(i, v)| {
+                            [i as f64, v.re]
+                        }).collect();
+                        plot_ui.line(Line::new(time_line).name("time line"));
+                        let time_ifft_line: Vec<[f64;2]> = time_from_ifft.iter().enumerate().map(|(i, v)| {
+                            [i as f64, v.re]
+                        }).collect();
+                        plot_ui.line(Line::new(time_ifft_line).name("time of ifft line"));
+                        let time_fft_line: Vec<[f64;2]> = fft_of_time.iter().enumerate().map(|(i, v)| {
+                            [i as f64, 20.*v.abs().log10()]
+                        }).collect();
+                        plot_ui.line(Line::new(time_fft_line).name("fft of time"));
+                        let time_fft_windowed_line: Vec<[f64;2]> = fft_of_time_windowed.iter().enumerate().map(|(i, v)| {
+                            [i as f64, 20.*v.abs().log10()]
+                        }).collect();
+                        plot_ui.line(Line::new(time_fft_windowed_line).name("windowed fft of time"));
+                        let fft_line: Vec<[f64;2]> = filtered_fft.iter().enumerate().map(|(i, v)| {
+                            [i as f64, 20.*v.abs().log10()]
+                        }).collect();
+                        plot_ui.line(Line::new(fft_line).name("fft of time filtered"));
+                        let fft_ifft_line: Vec<[f64;2]> = fft_of_ifft.iter().enumerate().map(|(i, v)| {
+                            [i as f64, 20.*v.abs().log10()]
+                        }).collect();
+                        plot_ui.line(Line::new(fft_ifft_line).name("fft of ifft"));
+                    });
+
                 });
             });
             ui.add_space(5.0);
